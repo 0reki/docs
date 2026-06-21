@@ -23,7 +23,6 @@
           "plugins/index",
           "plugins/ability",
           "plugins/manifest",
-          "plugins/collector",
           "plugins/assignment"
         ]
       }

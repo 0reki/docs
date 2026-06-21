@@ -1,0 +1,80 @@
+---
+title: "Manifest 文件规范"
+---
+
+`manifest.json` 是描述插件基本信息、服务发现规则、配置表和指标元数据的清单文件。
+
+## 文件结构
+
+| 字段               | 类型                 | 必需 | 说明                                                             |
+| ------------------ | -------------------- | ---- | ---------------------------------------------------------------- |
+| `id`               | `string`             | 是   | 插件唯一标识。                                                   |
+| `name`             | `string`             | 是   | 插件显示名称。                                                   |
+| `version`          | `string`             | 是   | 插件版本号。如果插件更新，此处的版本号必需更新。                 |
+| `description`      | `string`             | 是   | 插件描述。                                                       |
+| `collect_interval` | `string` or `number` | 是   | 采集间隔。支持 `15s` 等 duration 字符串，和纯数字(s)，最小为5s。 |
+| `tech_stack`       | `string`             | 是   | 技术栈标识。                                                     |
+| `os`               | `string[]`           | 是   | 插件支持的操作系统。                                             |
+| `category`         | `string`             | 否   | 插件分类。                                                       |
+| `match`            | `object`             | 是   | 服务发现规则。                                                   |
+| `config_schema`    | `object`             | 否   | 配置表单定义。                                                   |
+| `metrics`          | `object[]`           | 否   | 指标元数据。                                                     |
+
+## `match` 服务发现规则
+
+`match` 是 Agent 识别目标服务的描述。
+
+| 字段               | 类型       | 必需 | 说明               |
+| ------------------ | ---------- | ---- | ------------------ |
+| `process_names`    | `string[]` | 否   | 进程名列表。       |
+| `ports`            | `number[]` | 否   | 监听端口列表。     |
+| `cmdline_contains` | `string[]` | 否   | 命令行关键字列表。 |
+
+当 `process_names` 和 `ports` 同时配置时，它们必须被同时满足才能匹配。`cmdline_contains` 是过滤条件，可以用于筛选包含某些参数的进程。
+
+<Warning>请注意， `process_names` 和 `ports` 应当至少有一个被配置。</Warning>
+<Tip>
+  对于支持多平台的进程，请同时在 `process_names` 中加入不同平台上的进程名。
+</Tip>
+
+## `config_schema` 配置表单
+
+`config_schema` 定义插件需要的自定义配置，这些配置在插件导入平台时会被要求填写，并在下发到设备时被更新为正确的值。
+
+### 顶层字段
+
+| 字段         | 类型       | 必需 | 说明                      |
+| ------------ | ---------- | ---- | ------------------------- |
+| `type`       | `string`   | 是   | 固定为 `object`。         |
+| `required`   | `string[]` | 否   | 必需的配置项的 key 列表。 |
+| `properties` | `object`   | 是   | 每个配置项的定义。        |
+
+### `properties.<key>` 字段
+
+| 字段                  | 类型        | 必需 | 说明                                                      |
+| --------------------- | ----------- | ---- | --------------------------------------------------------- |
+| `type`                | `string`    | 是   | 字段类型。支持 `string`、`integer`、`number`、`boolean`。 |
+| `description`         | `string`    | 是   | 字段说明。                                                |
+| `default`             | 匹配 `type` | 否   | 默认值。                                                  |
+| `format`              | `string`    | 否   | 字符串字段的类型。支持 `uri` 和 `password`。              |
+| `minimum` / `maximum` | `number`    | 否   | 数值范围校验。仅用于 `integer` 和 `number`。              |
+| `enum`                | `array`     | 否   | 固定可选值列表，用于枚举配置。                            |
+
+<Warning>
+  密码、Token、密钥等敏感字段请务必配置 `format` 为 `password`。
+</Warning>
+
+## `metrics` 指标元数据
+
+`metrics` 声明插件采集的指标。每个指标项支持以下字段：
+
+| 字段          | 类型     | 必需 | 说明                                                 |
+| ------------- | -------- | ---- | ---------------------------------------------------- |
+| `key`         | `string` | 是   | 指标 key。它需要和采集器返回的 `dict` key 完全一致。 |
+| `title`       | `string` | 是   | 指标标题。                                           |
+| `type`        | `string` | 是   | 指标类型。支持 `gauge`、`counter`、`histogram`。     |
+| `unit`        | `string` | 是   | 指标单位。可用 `count` 和 `bytes` 等。               |
+| `description` | `string` | 是   | 指标含义说明。                                       |
+| `chart`       | `string` | 是   | 图表展示样式。支持 `line` 和 `bar`。                 |
+
+<Info>错误的 `metrics` 可能导致平台无法正确展示指标。</Info>
