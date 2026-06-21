@@ -13,8 +13,18 @@
       {
         "group": "Getting Started",
         "pages": [
-          "index",
-          "quickstart"
+          "getting_started/index",
+          "getting_started/quickstart"
+        ]
+      },
+      {
+        "group": "插件系统",
+        "pages": [
+          "plugins/index",
+          "plugins/ability",
+          "plugins/manifest",
+          "plugins/collector",
+          "plugins/assignment"
         ]
       }
     ]

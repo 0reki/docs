@@ -1,0 +1,247 @@
+---
+title: "引擎能力"
+---
+
+Clonitor 插件采集器运行在受限的 Starlark 引擎中，提供采集指标所需的网络请求、数据解析和日志能力，同时也限制了文件系统、命令执行等高风险操作以保障插件的跨平台运行和设备安全性。如果你不知道什么是 Starlark ，请阅读 [Starlark Language Specification](https://starlark-lang.org/spec.html) 。
+
+## 入口
+
+采集器支持两种入口写法。对于生产应用，我们建议使用 `collect` 函数来编写，因为它可以读取插件配置、服务信息，并调用引擎提供的采集能力。
+
+```python
+# 使用顶层 result 变量
+result = {"connected_clients": 3}
+```
+
+```python
+# 使用 collect 函数
+def collect(ctx):
+    return {"connected_clients": 3}
+```
+
+采集器的返回值必须是一个 `dict` ，其中的 `key` 是指标名， `value` 是指标 **数字** 。agent 会把这个 `dict` 作为本次采集结果上报到 Clonitor 平台。
+
+<Warning>
+  指标值必须是数字。字符串、对象、数组等非数字值不能作为指标值上报。
+</Warning>
+
+## 语法支持
+
+采集器使用受限的 Starlark 语法。你可以使用常见的数据结构、函数和条件逻辑，但不能使用可能导致设备不可控运行的语法。你可以在下方查看给出我们对语法的支持情况。
+
+| 能力                                     | 是否支持 |
+| ---------------------------------------- | -------- |
+| `None`、`bool`、`int`、`float`、`string` | 支持     |
+| `list`、`tuple`、`dict`、`set`           | 支持     |
+| 函数体内的 `if`、`elif`、`else`          | 支持     |
+| 函数体内的 `for` 循环                    | 支持     |
+| list 和 dict 推导式                      | 支持     |
+| `lambda` 和嵌套函数定义                  | 支持     |
+| 位运算                                   | 支持     |
+| `while` 循环                             | 不支持   |
+| 全局作用域 `if` 或 `for`                 | 不支持   |
+| 全局变量重新赋值                         | 不支持   |
+| 递归函数                                 | 不支持   |
+| `try` / `except`                         | 不支持   |
+
+对于判断和循环，你需要将其写在 `collect` 函数或自定义函数中，而不能直接在全局编写。
+
+```python
+def collect(ctx):
+    result = {}
+
+    for item in ctx.config.get("items", []):
+        if item.get("enabled"):
+            result[item["key"]] = item["value"]
+
+    return result
+```
+
+<Info>
+  Agent 对采集器的执行有超时保护。若采集器执行超时，本次采集会中断并按失败处理。
+</Info>
+
+## `ctx` 对象
+
+`ctx` 是引擎暴露的用于采集器和 Clonitor Agent 交互的上下文对象。你可以通过它读取配置、访问当前匹配到的服务，并调用 HTTP、TCP 和数据解析能力等。
+
+| 字段             | 类型       | 说明                                               |
+| ---------------- | ---------- | -------------------------------------------------- |
+| `ctx.config`     | `dict`     | 当前设备上的插件配置值。                           |
+| `ctx.service`    | `dict`     | 本次匹配到的服务信息，包括名称，端口，进程 id 等。 |
+| `ctx.manifest`   | `dict`     | 当前插件的完整 `manifest` 内容。                   |
+| `ctx.os`         | `string`   | 当前设备的操作系统。                               |
+| `ctx.http.get`   | `function` | 发起 HTTP GET 请求。                               |
+| `ctx.http.post`  | `function` | 发起 HTTP POST 请求。                              |
+| `ctx.tcp.send`   | `function` | 向 TCP 连接发送文本，并读取到对端关闭或超时为止。  |
+| `ctx.json.parse` | `function` | 将 JSON 字符串解析为对应的值。                     |
+| `ctx.xml.select` | `function` | 简单 XPath 取值。                                  |
+| `ctx.regex.find` | `function` | 正则提取第一个匹配结果。                           |
+| `ctx.log.info`   | `function` | 写入 INFO 级别日志。                               |
+| `ctx.log.warn`   | `function` | 写入 WARN 级别日志。                               |
+| `ctx.log.error`  | `function` | 写入 ERROR 级别日志。                              |
+
+### `ctx.config`
+
+`ctx.config` 由插件 `manifest` 中的 `config_schema.properties` 决定， Clonitor 会处理插件所需的配置，然后将正确的值下发到设备。
+
+以 Redis INFO 插件配置为例：
+
+```json
+"config_schema": {
+  "type": "object",
+  "required": ["host", "port"],
+  "properties": {
+    "host": {
+      "type": "string",
+      "default": "127.0.0.1",
+      "description": "Redis 主机地址"
+    },
+    "port": {
+      "type": "integer",
+      "default": 6379,
+      "minimum": 0,
+      "maximum": 65535,
+      "description": "Redis 端口号"
+    },
+    "password": {
+      "type": "string",
+      "format": "password",
+      "description": "Redis 密码"
+    }
+  }
+}
+```
+
+`config_schema` 所需字段如下：
+
+| 字段         | 必需 | 说明                                                                   |
+| ------------ | ---- | ---------------------------------------------------------------------- |
+| `type`       | 是   | 固定为 `object`。                                                      |
+| `required`   | 否   | 必填配置项的 key 列表。没有列在这里的字段都是可选字段。                |
+| `properties` | 是   | 每个配置项的定义。key 是配置项名称，也就是 `ctx.config` 中对应的 key。 |
+
+`properties.<key>` 支持以下字段：
+
+| 字段                  | 必填 | 说明                                                      |
+| --------------------- | ---- | --------------------------------------------------------- |
+| `type`                | 是   | 字段类型。支持 `string`、`integer`、`number`、`boolean`。 |
+| `description`         | 否   | 字段说明。                                                |
+| `default`             | 否   | 默认值。值类型需要和 `type` 匹配。                        |
+| `format`              | 否   | 字符串字段的类型。支持 `uri` 和 `password`。              |
+| `minimum` / `maximum` | 否   | 数值范围校验。仅用于 `integer` 和 `number`。              |
+| `enum`                | 否   | 固定可选值列表，用于枚举配置。                            |
+
+<Warning>
+  密码、Token、密钥等敏感字段请务必配置 `format` 为 `password`。
+</Warning>
+
+例如，`config_schema` 声明了必填的 `host` 和 `port` 后，采集器可以直接读取：
+
+```python
+def collect(ctx):
+    host = ctx.config["host"]
+    port = ctx.config["port"]
+    res = ctx.tcp.send(host, port, "INFO\r\n")
+    return {"up": 1 if res.ok else 0}
+```
+
+对于必填配置的读取，直接使用 `ctx.config["key"]` 即可，如果配置不存在，本次采集会按失败处理。对于可选配置的读取，请使用 `dict.get` 设置默认值。
+
+```python
+def collect(ctx):
+    password = ctx.config.get("password", "")
+    if password != "":
+        # ...
+        pass
+
+    res = ctx.tcp.send(ctx.config["host"], ctx.config["port"], "INFO\r\n")
+    return {"up": 1 if res.ok else 0}
+```
+
+### `ctx.service`
+
+`ctx.service` 描述采集器命中的服务实例。同一台设备上，同一个插件可能匹配到多个服务实例。每次执行采集采集器时，`ctx.service` 只表示当前这一个服务实例。
+
+| key          | 类型     | 必需 | 说明                |
+| ------------ | -------- | ---- | ------------------- |
+| `name`       | `string` | 是   | 匹配到的进程名。    |
+| `tech_stack` | `string` | 是   | 插件的技术栈标识。  |
+| `plugin_id`  | `string` | 是   | 当前插件 ID。       |
+| `port`       | `int`    | 否   | 服务端口。          |
+| `pid`        | `int`    | 否   | 服务进程 ID。       |
+| `service_id` | `string` | 否   | 平台分配的服务 ID。 |
+
+对于非必需字段，请使用`dict.get` 以避免可能产生的问题。
+
+```python
+def collect(ctx):
+    port = ctx.service.get("port")
+    if port == None:
+        ctx.log.warn("service port is missing")
+        return {"up": 0}
+
+    res = ctx.tcp.send("127.0.0.1", port, "INFO\r\n")
+    return {"up": 1 if res.ok else 0}
+```
+
+### HTTP 响应结构
+
+`ctx.http.get` 和 `ctx.http.post` 使用相同的返回结构。
+
+| key           | 类型     | 说明                                                                                                              |
+| ------------- | -------- | ----------------------------------------------------------------------------------------------------------------- |
+| `ok`          | `bool`   | 请求是否成功发出并读到完整响应体。连接失败、超时或读取响应体失败时，此值为 `False`。                              |
+| `status_code` | `int`    | HTTP 状态码。连接未建立时为 `0`。如果已经拿到响应头但读取响应体失败，可能仍是真实状态码，此时 `ok` 仍为 `False`。 |
+| `headers`     | `dict`   | 响应头。                                                                                                          |
+| `body`        | `string` | 响应体。                                                                                                          |
+| `error`       | `string` | 失败原因。                                                                                                        |
+
+<Warning>HTTP 请求失败时并不会直接中断采集器，因此你需要检查返回值。</Warning>
+
+### TCP 响应结构
+
+`ctx.tcp.send` 返回 TCP 读写结果。它也不会在连接或读写失败时直接中断采集器。
+
+| key     | 类型     | 说明                                                                         |
+| ------- | -------- | ---------------------------------------------------------------------------- |
+| `ok`    | `bool`   | TCP 连接、写入和读取是否成功。                                               |
+| `body`  | `string` | 读取到的响应内容。如果连接后读取到一部分数据再失败，此处会保留已读取的内容。 |
+| `error` | `string` | 失败原因。                                                                   |
+
+## 数据解析
+
+引擎内置了 JSON、XML 和正则解析能力，这些能力能帮助处理 HTTP 或 TCP 返回的数据。
+
+```python
+def collect(ctx):
+    res = ctx.http.get(ctx.config["status_url"])
+    if not res.ok:
+        return {"up": 0}
+
+    data = ctx.json.parse(res.body)
+    return {
+        "up": 1,
+        "active_connections": data.get("active_connections", 0),
+    }
+```
+
+`ctx.json.parse` 解析出的数字会按浮点数处理。
+
+<Warning>
+  `ctx.json.parse`、`ctx.xml.select` 和 `ctx.regex.find`
+  失败时会中断采集器。它们和 HTTP/TCP 请求不同，不会返回 `ok` 字段。
+</Warning>
+
+## 运行限制
+
+插件引擎限制了部分系统能力以保证采集器安全、跨平台和可控运行。
+
+| 限制             | 说明                               |
+| ---------------- | ---------------------------------- |
+| 无文件系统访问   | 采集器不能读取或写入本地文件。     |
+| 无 shell 或 exec | 采集器不能执行系统命令。           |
+| 无异常捕获       | Starlark 不支持 `try` / `except`。 |
+| 无无限循环能力   | 不支持 `while` 和递归函数。        |
+
+如果目标服务只能通过本地文件、系统命令或数据库原生协议采集指标，请在目标设备上部署 exporter，再由插件通过 `ctx.http.get` 采集。
