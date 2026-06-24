@@ -1,0 +1,403 @@
+---
+title: "设备接入"
+---
+
+Clonitor 的设备接入从管理端创建注册凭据开始，经过安装脚本、Agent 注册、Bearer token 认证和心跳上报，最终在设备列表和设备详情页展示。
+
+## 接入链路
+
+<Steps>
+  <Step title="打开设备页">
+    设备页服务端读取 `Host` 和 `Group`。设备列表按 `lastSeenAt` 倒序展示，注册抽屉使用设备组作为可选分组。
+  </Step>
+
+  <Step title="创建设备注册">
+    管理员在设备页创建 enrollment。前端提交 `metadata.platform` 和 `metadata.group_ids`，后端创建 `AgentEnrollment`。
+  </Step>
+
+  <Step title="展示安装信息">
+    平台返回 `enrollment_token`、`server_url` 和 `install_command`。Linux 和 macOS 展示 shell 命令，Windows 展示服务器地址和注册 token。
+  </Step>
+
+  <Step title="Agent 注册">
+    Agent 使用 enrollment token 调用 `POST /api/v1/agent/register`。平台校验 token 状态，创建 Host，并返回 `agent_token`。
+  </Step>
+
+  <Step title="后续认证">
+    Agent 后续请求都使用 `Authorization: Bearer <agent-token>`。平台只保存 agent token 的 SHA-256 哈希。
+  </Step>
+
+  <Step title="心跳和展示">
+    Agent 调用心跳接口更新 `lastSeenAt`、`status` 和系统信息。Dashboard 通过设备列表和设备详情页展示这些数据。
+  </Step>
+</Steps>
+
+## 前端入口
+
+设备页位于：
+
+```text
+clonitor/apps/web/app/dashboard/devices/page.tsx
+```
+
+页面服务端同时读取设备和设备组：
+
+| 数据 | 用途 |
+| --- | --- |
+| `Host` | 展示设备列表，包含主机名、IP、系统、CPU、内存、状态、服务数和插件数。 |
+| `Group` | 给注册抽屉提供可选分组。 |
+
+设备列表中的 `serviceCount` 和 `pluginCount` 不是单独的数据库计数字段，而是分别来自 `services` 和 `pluginBindings` 的关联记录数量。
+
+注册抽屉位于：
+
+```text
+clonitor/apps/web/app/dashboard/devices/device-enrollment-sheet.tsx
+```
+
+创建注册时，前端向管理端注册接口提交：
+
+```json
+{
+  "metadata": {
+    "platform": "linux",
+    "group_ids": ["<group-id>"]
+  }
+}
+```
+
+`platform` 支持：
+
+| 值 | 展示 |
+| --- | --- |
+| `linux` | 展示 shell 安装命令。 |
+| `macos` | 展示 shell 安装命令。 |
+| `windows` | 展示服务器地址和注册 token。 |
+
+## 管理端注册接口
+
+管理端注册接口是：
+
+```http
+POST /api/v1/enrollments
+```
+
+对应代码：
+
+```text
+clonitor/apps/web/app/api/v1/enrollments/route.ts
+clonitor/apps/web/lib/agent/enrollments.ts
+```
+
+创建注册需要登录，并且用户角色需要满足 `canManage`。当前权限判断等价于只有 `admin` 可以创建。
+
+请求体只有一个可选字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `metadata.platform` | 可选，支持 `linux`、`macos`、`windows`，非法值回退到 `linux`。 |
+| `metadata.group_ids` | 可选，字符串数组。后端会过滤、去重，并校验组是否存在。 |
+
+后端创建 enrollment 时会生成一次性注册 token：
+
+| 规则 | 代码行为 |
+| --- | --- |
+| token 前缀 | `createEnrollmentToken()` 生成 `ag_enroll_` 开头的 token。 |
+| 入库方式 | `hashEnrollmentToken()` 使用 SHA-256 后写入 `tokenHash`。 |
+| 使用次数 | `maxUses` 固定为 `1`。 |
+| 有效期 | `expiresAt` 固定为创建后 1 小时。 |
+
+<Info>
+明文 `enrollment_token` 只在创建响应中返回。查询 enrollment 列表时只返回记录状态、使用次数、过期时间和关联设备，不会返回 token 明文。
+</Info>
+
+成功响应包含：
+
+```json
+{
+  "enrollment": {
+    "id": "<enrollment-id>",
+    "max_uses": 1,
+    "used_count": 0,
+    "expires_at": "2026-06-24T10:00:00.000Z",
+    "state": "active"
+  },
+  "server_url": "https://clonitor.space",
+  "enrollment_token": "ag_enroll_xxx",
+  "install_command": "curl -fsSL https://clonitor.space/api/v1/agent/install.sh | sudo sh -s -- --server-url https://clonitor.space --enrollment-token ag_enroll_xxx"
+}
+```
+
+## 安装脚本
+
+安装命令指向：
+
+```http
+GET /api/v1/agent/install.sh
+```
+
+脚本文件在：
+
+```text
+clonitor/apps/web/public/api/v1/agent/install.sh
+```
+
+脚本接收两个关键参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--server-url` | Clonitor 平台地址。 |
+| `--enrollment-token` | 设备注册 token。 |
+
+脚本默认值包括：
+
+| 变量 | 默认值 |
+| --- | --- |
+| `BIN_SRC` | `./clonitor-agent` |
+| `BIN_DST` | `/usr/local/bin/clonitor-agent` |
+| `SERVICE_FILE` | `/etc/systemd/system/clonitor-agent.service` |
+| `STATE_PATH` | `/var/lib/clonitor-agent/state.json` |
+| `PLUGIN_DIR` | `/var/lib/clonitor-agent/plugins` |
+
+<Warning>
+当前安装脚本是 Linux/systemd 风格。它不会自动下载 Agent 二进制，而是默认从当前目录的 `./clonitor-agent` 复制到 `/usr/local/bin/clonitor-agent`。
+</Warning>
+
+## Agent 注册接口
+
+Agent 注册接口是：
+
+```http
+POST /api/v1/agent/register
+```
+
+对应代码：
+
+```text
+clonitor/apps/web/app/api/v1/agent/register/route.ts
+clonitor/apps/web/lib/agent/schemas.ts
+clonitor/apps/web/lib/agent/rate-limit.ts
+```
+
+注册接口使用 `agentRegisterRateLimit`，限制为每分钟 20 次，作用域是 `agent-register`。
+
+请求字段同时支持 snake_case 和 camelCase：
+
+| 字段 | 说明 |
+| --- | --- |
+| `enrollment_token` / `enrollmentToken` | 必填，管理端创建注册时返回的明文 token。 |
+| `hostname` | 必填，设备主机名。 |
+| `ip` | 必填，设备 IP。 |
+| `os` | 必填，操作系统。 |
+| `arch` | 必填，CPU 架构。 |
+| `cpu_model` / `cpuModel` | 必填，CPU 型号。 |
+| `cpu_cores` / `cpuCores` | 必填，CPU 核心数。 |
+| `total_memory` / `totalMemory` | 必填，总内存，后端会转为 BigInt。 |
+
+注册时，后端先把明文 enrollment token hash 后查询 `AgentEnrollment`，再判断状态：
+
+| 状态 | 条件 |
+| --- | --- |
+| `revoked` | `revokedAt` 已存在。 |
+| `expired` | `expiresAt` 早于当前时间。 |
+| `exhausted` | `usedCount >= maxUses`。 |
+| `active` | 未撤销、未过期、未用尽。 |
+
+只有 `active` 状态可以继续注册。注册成功时，事务中会完成三件事：
+
+1. 将 enrollment 的 `usedCount` 加 1。
+2. 创建 `Host`，写入设备基础信息、`agentTokenHash`、`lastSeenAt` 和 `status: "online"`。
+3. 如果 metadata 中有 `group_ids`，写入 `group_members`，成员类型为 `device`。
+
+成功响应会返回：
+
+```json
+{
+  "host_id": "<host-id>",
+  "agent_token": "<agent-token>",
+  "host": {
+    "id": "<host-id>",
+    "hostname": "prod-node-01",
+    "status": "online",
+    "registered_at": "2026-06-24T10:00:00.000Z",
+    "last_seen_at": "2026-06-24T10:00:00.000Z"
+  }
+}
+```
+
+## Agent 认证和心跳
+
+Agent token 的生成和认证逻辑在：
+
+```text
+clonitor/apps/web/lib/agent/auth.ts
+```
+
+平台生成 32 字节随机 token，返回给 Agent。入库前通过 SHA-256 写入 `Host.agentTokenHash`。后续 Agent 请求需要携带：
+
+```http
+Authorization: Bearer <agent-token>
+```
+
+认证时，平台会检查 `Authorization` 是否以 `Bearer ` 开头，然后 hash token，通过 `agentTokenHash` 查找 Host，并用安全比较确认 hash 一致。
+
+心跳接口是：
+
+```http
+POST /api/v1/agent/heartbeat
+```
+
+对应代码：
+
+```text
+clonitor/apps/web/app/api/v1/agent/heartbeat/route.ts
+clonitor/apps/web/lib/agent/schemas.ts
+```
+
+心跳请求体可以为空，也可以带 `system` 对象。`system` 同样支持 snake_case 和 camelCase：
+
+| 字段 | 写入 Host |
+| --- | --- |
+| `hostname` | `hostname` |
+| `ip` | `ip` |
+| `os` | `os` |
+| `arch` | `arch` |
+| `distro` | `distro` |
+| `kernel_version` / `kernelVersion` | `kernelVersion` |
+| `os_type` / `osType` | `osType` |
+| `boot_time` / `bootTime` | `bootTime` |
+| `uptime_seconds` / `uptimeSeconds` | `uptimeSeconds` |
+
+每次心跳都会更新：
+
+| 字段 | 值 |
+| --- | --- |
+| `lastSeenAt` | 当前时间。 |
+| `status` | `online`。 |
+| 系统字段 | 如果请求体提供了 `system`，同步写入 Host。 |
+
+响应结构：
+
+```json
+{
+  "host_id": "<host-id>",
+  "status": "online",
+  "last_seen_at": "2026-06-24T10:00:30.000Z"
+}
+```
+
+<Warning>
+当前平台不会基于 `lastSeenAt` 超时自动把设备改为 `offline`。明确写入 `offline` 的路径是 Agent 调用 unregister 接口。
+</Warning>
+
+## Agent 配置
+
+Agent 可以读取配置：
+
+```http
+GET /api/v1/agent/config
+```
+
+对应代码：
+
+```text
+clonitor/apps/web/app/api/v1/agent/config/route.ts
+```
+
+配置接口返回心跳间隔、插件轮询间隔和各类批量上报限制。其中和设备接入最相关的是：
+
+| 字段 | 值 |
+| --- | --- |
+| `heartbeat_interval_seconds` | `30` |
+| `plugin_poll_interval_seconds` | `60` |
+
+## 平台展示
+
+设备列表的初始数据来自服务端页面，刷新数据来自：
+
+```http
+GET /api/hosts
+```
+
+对应代码：
+
+```text
+clonitor/apps/web/app/api/hosts/route.ts
+```
+
+列表接口支持：
+
+| 参数 | 说明 |
+| --- | --- |
+| `q` | 按 `hostname` 或 `ip` 模糊搜索。 |
+| `status` | 按 `unknown`、`online`、`offline`、`warning` 过滤。 |
+
+返回字段包括：
+
+| 字段 | 说明 |
+| --- | --- |
+| `hostname`、`ip`、`os`、`arch` | 设备基础信息。 |
+| `cpu_model`、`cpu_cores`、`total_memory` | 硬件信息。 |
+| `registered_at`、`last_seen_at` | 注册时间和最后心跳时间。 |
+| `status` | 设备状态。 |
+| `counts.services` | 服务数量。 |
+| `counts.plugin_bindings` | 插件绑定数量。 |
+| `counts.alerts` | 告警数量。 |
+
+设备状态的展示文案来自：
+
+```text
+clonitor/apps/web/app/dashboard/devices/host-utils.ts
+```
+
+当前 `online` 显示为“在线”，`offline` 显示为“离线”，其他状态显示为“未知”。因此 `warning` 虽然是数据库枚举值，设备列表里仍会显示为“未知”。
+
+设备详情页位于：
+
+```text
+clonitor/apps/web/app/dashboard/devices/[id]/page.tsx
+```
+
+详情页读取 Host 主体信息、最近 240 条主机指标和该设备下的服务列表。删除设备调用：
+
+```http
+DELETE /api/hosts/:id
+```
+
+删除需要登录和管理权限。接口直接删除 Host，关联记录如何处理由 Prisma schema 中的关系定义决定。
+
+## 数据记录
+
+设备状态枚举在 Prisma schema 中定义：
+
+```prisma
+enum HostStatus {
+  unknown
+  online
+  offline
+  warning
+}
+```
+
+设备主体记录在 `Host`：
+
+| 字段 | 说明 |
+| --- | --- |
+| `hostname`、`ip`、`os`、`arch` | 设备基础信息。 |
+| `distro`、`kernelVersion`、`osType`、`bootTime`、`uptimeSeconds` | 心跳同步的系统信息。 |
+| `cpuModel`、`cpuCores`、`totalMemory` | 注册时写入的硬件信息。 |
+| `agentTokenHash` | agent token 的 SHA-256 哈希。 |
+| `registeredAt`、`lastSeenAt` | 注册时间和最后心跳时间。 |
+| `status` | 当前设备状态。 |
+| `enrollmentId` | 来源注册凭据。 |
+
+注册凭据记录在 `AgentEnrollment`：
+
+| 字段 | 说明 |
+| --- | --- |
+| `tokenHash` | enrollment token 的 SHA-256 哈希。 |
+| `metadata` | 平台和分组等注册元数据。 |
+| `maxUses`、`usedCount` | 使用次数限制和已使用次数。 |
+| `expiresAt`、`revokedAt` | 过期和撤销状态。 |
+| `createdById` | 创建注册的用户。 |
+| `hosts` | 使用该注册凭据创建的设备。 |
