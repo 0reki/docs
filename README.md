@@ -35,10 +35,10 @@ npm i -g mint
 Run the following command at the root of your documentation, where your `docs.json` is located:
 
 ```
-mint dev
+mint dev --port 9191
 ```
 
-View your local preview at `http://localhost:3000`.
+View your local preview at `http://localhost:9191`.
 
 ## Publishing changes
 

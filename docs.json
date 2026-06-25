@@ -18,6 +18,16 @@
         ]
       },
       {
+        "group": "平台能力",
+        "pages": [
+          "platform/index",
+          "platform/devices",
+          "platform/status",
+          "platform/services",
+          "platform/alerts"
+        ]
+      },
+      {
         "group": "插件系统",
         "pages": [
           "plugins/index",
