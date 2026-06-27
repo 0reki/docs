@@ -11,20 +11,11 @@
   "navigation": {
     "pages": [
       {
-        "group": "Getting Started",
+        "group": "设备管理",
         "pages": [
-          "getting_started/index",
-          "getting_started/quickstart"
-        ]
-      },
-      {
-        "group": "平台能力",
-        "pages": [
-          "platform/index",
-          "platform/devices",
-          "platform/status",
-          "platform/services",
-          "platform/alerts"
+          "devices/index",
+          "devices/registration",
+          "devices/detail"
         ]
       },
       {
@@ -34,6 +25,22 @@
           "plugins/ability",
           "plugins/manifest",
           "plugins/assignment"
+        ]
+      },
+      {
+        "group": "告警系统",
+        "pages": [
+          "alerts/index",
+          "alerts/rules",
+          "alerts/receivers",
+          "alerts/silence"
+        ]
+      },
+      {
+        "group": "CloLens",
+        "pages": [
+          "clolens/index",
+          "clolens/sampling"
         ]
       }
     ]

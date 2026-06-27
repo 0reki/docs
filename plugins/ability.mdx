@@ -81,6 +81,96 @@ def collect(ctx):
 | `ctx.log.warn`   | `function` | 写入 WARN 级别日志。                               |
 | `ctx.log.error`  | `function` | 写入 ERROR 级别日志。                              |
 
+### 函数签名
+
+#### `ctx.http.get`
+
+```python
+ctx.http.get(url: string, headers: dict = None, timeout_ms: int = 0) -> http_response
+```
+
+发起 HTTP GET 请求。
+
+| 参数         | 类型     | 必需 | 说明                                      |
+| ------------ | -------- | ---- | ----------------------------------------- |
+| `url`        | `string` | 是   | 请求地址。                                |
+| `headers`    | `dict`   | 否   | 请求头，key 和 value 都必须是字符串。     |
+| `timeout_ms` | `int`    | 否   | 请求超时时间，单位毫秒；不传时默认 5 秒。 |
+
+#### `ctx.http.post`
+
+```python
+ctx.http.post(url: string, body: string, headers: dict = None, timeout_ms: int = 0) -> http_response
+```
+
+发起 HTTP POST 请求。Agent 会默认设置 `Content-Type: application/json`，也可以通过 `headers` 覆盖或补充请求头。
+
+| 参数         | 类型     | 必需 | 说明                                      |
+| ------------ | -------- | ---- | ----------------------------------------- |
+| `url`        | `string` | 是   | 请求地址。                                |
+| `body`       | `string` | 是   | 请求体。                                  |
+| `headers`    | `dict`   | 否   | 请求头，key 和 value 都必须是字符串。     |
+| `timeout_ms` | `int`    | 否   | 请求超时时间，单位毫秒；不传时默认 5 秒。 |
+
+#### `ctx.tcp.send`
+
+```python
+ctx.tcp.send(host: string, port: int, command: string, timeout_ms: int = 0) -> tcp_response
+```
+
+建立 TCP 连接，写入 `command`，然后读取到对端关闭、超时或响应体达到大小限制为止。
+
+| 参数         | 类型     | 必需 | 说明                                      |
+| ------------ | -------- | ---- | ----------------------------------------- |
+| `host`       | `string` | 是   | 目标主机名或 IP。                         |
+| `port`       | `int`    | 是   | 目标端口。                                |
+| `command`    | `string` | 是   | 要写入 TCP 连接的文本。                   |
+| `timeout_ms` | `int`    | 否   | 连接和读写超时时间，单位毫秒；默认 5 秒。 |
+
+#### `ctx.json.parse`
+
+```python
+ctx.json.parse(str: string) -> any
+```
+
+将 JSON 字符串解析为 Starlark 值。JSON object 会变成 `dict`，array 会变成 `list`，数字会按浮点数处理。JSON 格式非法时，本次采集会失败。
+
+#### `ctx.xml.select`
+
+```python
+ctx.xml.select(str: string, xpath: string) -> string | None
+```
+
+从 XML 字符串中按简单路径取值。支持 `/root/item/name` 这种绝对路径，也支持 `//name` 这种按末尾路径匹配的写法。未匹配到时返回 `None`，XML 解析失败时本次采集会失败。
+
+| 参数    | 类型     | 必需 | 说明           |
+| ------- | -------- | ---- | -------------- |
+| `str`   | `string` | 是   | XML 原始文本。 |
+| `xpath` | `string` | 是   | 查询路径。     |
+
+#### `ctx.regex.find`
+
+```python
+ctx.regex.find(str: string, pattern: string) -> string | None
+```
+
+在 `str` 中查找第一个正则匹配。正则包含捕获组时返回第一个捕获组，否则返回完整匹配；未匹配到时返回 `None`。正则表达式非法时，本次采集会失败。
+
+| 参数      | 类型     | 必需 | 说明               |
+| --------- | -------- | ---- | ------------------ |
+| `str`     | `string` | 是   | 被匹配的原始文本。 |
+| `pattern` | `string` | 是   | 正则表达式。       |
+
+#### 日志函数
+
+```python
+ctx.log.info(msg: string) -> None
+ctx.log.warn(msg: string) -> None
+ctx.log.error(msg: string) -> None
+```
+
+写入 Agent 日志。日志函数只接受字符串消息，不会返回采集指标。
+
 ### `ctx.config`
 
 `ctx.config` 是平台下发给当前设备的插件配置值。
